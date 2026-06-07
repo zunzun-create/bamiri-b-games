@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>+場ミリ+ SHOOTING</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #060d1a; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: 'Courier New', monospace; overflow: hidden; touch-action: none; }
+#wrapper { position: relative; width: 100%; max-width: 360px; }
+#hud { background: #0a1628; color: #e8d44d; display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; font-size: 13px; letter-spacing: 1px; border-bottom: 2px solid #2255aa; }
+#gameCanvas { display: block; background: #0d1b2a; image-rendering: pixelated; image-rendering: crisp-edges; width: 100%; height: auto; }
+#controls { background: #0a1628; border-top: 2px solid #1a3355; display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; height: 48px; }
+.touch-hint { color: #2255aa; font-size: 10px; letter-spacing: 1px; text-align: center; width: 100%; }
+/* touch zones overlay on canvas */
+#touchLeft, #touchRight {
+  position: absolute; top: 22px; bottom: 48px; width: 50%;
+  z-index: 5; cursor: pointer;
+}
+#touchLeft  { left: 0; }
+#touchRight { right: 0; }
+#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(6,13,26,0.94); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; }
+.ov-title { color: #e8d44d; font-size: 26px; font-weight: bold; letter-spacing: 4px; margin-bottom: 4px; }
+.ov-sub { color: #888; font-size: 11px; letter-spacing: 3px; margin-bottom: 20px; }
+.ov-name { color: #e8d44d; font-size: 10px; letter-spacing: 2px; margin-bottom: 24px; opacity: 0.7; }
+.diff-label { color: #aaa; font-size: 11px; letter-spacing: 2px; margin-bottom: 10px; }
+.diff-btns { display: flex; gap: 8px; margin-bottom: 20px; }
+.diff-btn { padding: 10px 18px; border: 2px solid #444; background: #1a1a1a; color: #aaa; font-family: 'Courier New', monospace; font-size: 12px; letter-spacing: 1px; cursor: pointer; border-radius: 4px; }
+.diff-btn:hover, .diff-btn.sel { border-color: #e8d44d; color: #e8d44d; background: #222; }
+.start-btn { padding: 12px 40px; background: #e8d44d; color: #111; border: none; font-family: 'Courier New', monospace; font-size: 15px; font-weight: bold; letter-spacing: 3px; cursor: pointer; border-radius: 4px; }
+.start-btn:hover { background: #fff; }
+.hint { color: #555; font-size: 10px; letter-spacing: 1px; margin-top: 14px; line-height: 1.8; text-align: center; }
+.ov-score { color: #e8d44d; font-size: 20px; letter-spacing: 2px; margin: 8px 0; }
+.ov-msg { color: #888; font-size: 11px; letter-spacing: 2px; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<div id="wrapper">
+  <div id="hud">
+    <span id="scoreDisp">SCORE:0</span>
+    <span id="livesDisp">♥♥♥</span>
+    <span id="levelDisp">LV:1</span>
+  </div>
+  <div id="touchLeft"></div>
+  <div id="touchRight"></div>
+  <canvas id="gameCanvas" width="360" height="480"></canvas>
+  <div id="controls">
+    <div class="touch-hint">◀ 左タップ：移動　右タップ：移動　両手同時：射撃 ▶　／　PC：矢印キー＋スペース</div>
+  </div>
+  <div id="overlay">
+    <div class="ov-title">+場ミリ+</div>
+    <div class="ov-sub">SHOOTING</div>
+    <div class="ov-name">元AD伊多月ばみりの</div>
+    <div class="diff-label">- DIFFICULTY -</div>
+    <div class="diff-btns">
+      <button class="diff-btn" data-d="easy">🐱 やさしい</button>
+      <button class="diff-btn sel" data-d="normal">⭐ ふつう</button>
+      <button class="diff-btn" data-d="hard">🔥 むずかしい</button>
+    </div>
+    <button class="start-btn" id="startBtn">▶ START</button>
+    <div class="hint">◀ ▶ ボタンで移動<br>FIRE ボタンで射撃<br>🐱 猫をゲットでライフ回復！</div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const W = 360, H = 480;
+
+// ===== SOUND ENGINE =====
+let audioCtx = null;
+function getAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+function playTone(freq, type, duration, vol=0.3, freqEnd=null) {
+  try {
+    const ac = getAudio();
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, ac.currentTime);
+    if (freqEnd) osc.frequency.exponentialRampToValueAtTime(freqEnd, ac.currentTime + duration);
+    gain.gain.setValueAtTime(vol, ac.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + duration);
+    osc.start(ac.currentTime);
+    osc.stop(ac.currentTime + duration);
+  } catch(e) {}
+}
+
+const SFX = {
+  shoot() {
+    playTone(880, 'square', 0.06, 0.15, 440);
+  },
+  enemyDie() {
+    playTone(220, 'square', 0.05, 0.2);
+    setTimeout(()=>playTone(160,'sawtooth',0.08,0.2,80), 40);
+  },
+  playerHit() {
+    playTone(150, 'sawtooth', 0.1, 0.35, 60);
+    playTone(100, 'square',   0.15, 0.25, 50);
+  },
+  catGet() {
+    playTone(523,'sine',0.07,0.2);
+    setTimeout(()=>playTone(659,'sine',0.07,0.2), 70);
+    setTimeout(()=>playTone(784,'sine',0.1, 0.25),140);
+  },
+  bossAppear() {
+    [110,130,155,110].forEach((f,i)=>setTimeout(()=>playTone(f,'sawtooth',0.18,0.3),i*120));
+  },
+  bossHit() {
+    playTone(300,'square',0.04,0.15,200);
+  },
+  bossDie() {
+    [523,659,784,1046,784,659,523].forEach((f,i)=>setTimeout(()=>playTone(f,'square',0.12,0.22),i*80));
+  },
+  levelUp() {
+    [392,523,659,784].forEach((f,i)=>setTimeout(()=>playTone(f,'square',0.1,0.2),i*70));
+  },
+  gameover() {
+    [440,330,220,165,110].forEach((f,i)=>setTimeout(()=>playTone(f,'square',0.25,0.25),i*200));
+  }
+};
+
+// BGM - 緊張感あるシューティング向けメロディ
+const BGM_NOTES = [
+  220,262,220,196, 220,262,294,220,
+  262,330,294,262, 220,196,220,165,
+  185,220,185,165, 185,220,247,185,
+  220,262,247,220, 196,165,185,220
+];
+let bgmStep=0, bgmTimer=null, bgmPlaying=false;
+
+function playBGMNote() {
+  if (!bgmPlaying) return;
+  const freq = BGM_NOTES[bgmStep % BGM_NOTES.length];
+  playTone(freq, 'square', 0.12, 0.14);
+  // bass line every 4 steps
+  if (bgmStep % 4 === 0) playTone(freq * 0.5, 'square', 0.18, 0.08);
+  bgmStep++;
+  bgmTimer = setTimeout(playBGMNote, 140);
+}
+function startBGM() {
+  if (bgmPlaying) return;
+  bgmPlaying = true; bgmStep = 0;
+  getAudio(); playBGMNote();
+}
+function stopBGM() {
+  bgmPlaying = false;
+  if (bgmTimer) clearTimeout(bgmTimer);
+}
+
+const DIFF = {
+  easy:   { speed: 2.2, eSpd: 0.8,  eBulletSpd: 1.6, shootInt: 130, lives: 5, label:'やさしい' },
+  normal: { speed: 3.2, eSpd: 1.2,  eBulletSpd: 2.4, shootInt: 90,  lives: 3, label:'ふつう' },
+  hard:   { speed: 4.0, eSpd: 1.8,  eBulletSpd: 3.4, shootInt: 55,  lives: 2, label:'むずかしい' }
+};
+
+let diff = 'normal', cfg = DIFF[diff];
+let state = 'title', score = 0, lives = 3, level = 1, frame = 0;
+let player, bullets, enemies, particles, stars, enemyBullets, cats, boss, bossPhase;
+
+document.querySelectorAll('.diff-btn').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.diff-btn').forEach(x => x.classList.remove('sel'));
+    b.classList.add('sel');
+    diff = b.dataset.d;
+    cfg = DIFF[diff];
+  });
+});
+
+function initGame() {
+  cfg = DIFF[diff];
+  score = 0; lives = cfg.lives; level = 1; frame = 0;
+  player = { x: W/2, y: H - 56, w: 24, h: 30, shootCool: 0, invincible: 0 };
+  bullets = []; enemies = []; particles = []; enemyBullets = []; cats = [];
+  boss = null; bossPhase = 0;
+  stars = Array.from({length: 50}, () => ({ x: Math.random()*W, y: Math.random()*H, s: Math.random()*1.5+0.5, sp: Math.random()*0.5+0.3 }));
+  spawnWave();
+}
+
+function spawnWave() {
+  if (level % 3 === 0) { spawnBoss(); return; }
+  const cols = Math.min(5 + level, 8), rows = 2;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const spd = cfg.eSpd * (1 + level * 0.08);
+      enemies.push({ x: 30 + c * (W-60)/cols, y: 30 + r*36, w: 20, h: 18, hp: 1, type: r%2,
+        dx: spd * (c%2?1:-1), dy: 0, shootTimer: Math.random()*cfg.shootInt+40 });
+    }
+  }
+}
+
+function spawnBoss() {
+  boss = { x: W/2, y: 60, w: 52, h: 48, hp: 15 + level*3, maxHp: 15 + level*3,
+    dx: 1.5 + level*0.2, dy: 0, phase: 0, shootTimer: 60, openAngle: 0, opening: true };
+}
+
+const keys = {};
+document.addEventListener('keydown', e => { keys[e.code] = true; if(e.code==='Space') e.preventDefault(); });
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// ===== TOUCH CONTROLS: 画面2分割 =====
+// 左半分 → 左移動、右半分 → 右移動、両同時 → 射撃
+let touchesActive = {};
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  getAudio(); // unlock audio on first touch
+  for (let t of e.changedTouches) touchesActive[t.identifier] = t.clientX;
+  updateTouchKeys();
+}, {passive:false});
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  for (let t of e.changedTouches) touchesActive[t.identifier] = t.clientX;
+  updateTouchKeys();
+}, {passive:false});
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  for (let t of e.changedTouches) delete touchesActive[t.identifier];
+  updateTouchKeys();
+}, {passive:false});
+
+canvas.addEventListener('touchcancel', e => {
+  for (let t of e.changedTouches) delete touchesActive[t.identifier];
+  updateTouchKeys();
+}, {passive:false});
+
+function updateTouchKeys() {
+  const rect = canvas.getBoundingClientRect();
+  const mid = rect.left + rect.width / 2;
+  const touches = Object.values(touchesActive);
+  const hasLeft  = touches.some(x => x < mid);
+  const hasRight = touches.some(x => x >= mid);
+  // 両同時タップで射撃
+  keys['ArrowLeft']  = hasLeft  && !hasRight;
+  keys['ArrowRight'] = hasRight && !hasLeft;
+  keys['Space']      = hasLeft  && hasRight;
+}
+
+document.getElementById('startBtn').addEventListener('click', () => {
+  initGame();
+  document.getElementById('overlay').style.display = 'none';
+  state = 'play';
+  startBGM();
+  requestAnimationFrame(loop);
+});
+
+function spawnParticle(x, y, color, n=8) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random()*Math.PI*2, s = Math.random()*2.5+0.8;
+    particles.push({ x, y, vx: Math.cos(a)*s, vy: Math.sin(a)*s, life: 30+Math.random()*20, maxLife: 50, color });
+  }
+}
+
+function maybeDrop(x, y) {
+  if (Math.random() < 0.12) cats.push({ x, y, dy: 1.2, w: 22, h: 16 });
+}
+
+// ===== DRAW FUNCTIONS =====
+
+function drawBamiri(px, py, inv) {
+  if (inv && frame%6 >= 3) return;
+  const p = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(px+x, py+y, w, h); };
+  // hair
+  p(-10,-22,20,14,'#1a3a8c'); p(-12,-16,6,10,'#1a3a8c'); p(6,-16,6,10,'#1a3a8c');
+  p(-8,-24,6,6,'#2248b0'); p(2,-26,6,8,'#2248b0');
+  p(-6,-18,6,4,'#ffffff33');
+  // face
+  p(-6,-14,12,10,'#f5d0b0');
+  p(-4,-11,2,2,'#1a1a1a'); p(2,-11,2,2,'#1a1a1a');
+  p(-5,-7,3,2,'#ffaaaa'); p(2,-7,3,2,'#ffaaaa');
+  p(-2,-5,4,2,'#cc8870');
+  // body
+  p(-7,-4,14,10,'#202020');
+  p(-7,-1,2,5,'#e06020'); p(5,-1,2,5,'#e06020');
+  p(-2,-2,4,2,'#e06020');
+  // long hair
+  p(-12,-12,5,22,'#1a3a8c'); p(7,-12,5,22,'#1a3a8c');
+}
+
+function drawEnemy(ex, ey, type) {
+  const p = (x,y,w,h,c) => { ctx.fillStyle=c; ctx.fillRect(ex+x,ey+y,w,h); };
+  if (type===0) {
+    p(-9,-8,18,14,'#cc2222'); p(-7,-10,14,4,'#ff4444');
+    p(-11,-5,4,8,'#aa1111'); p(7,-5,4,8,'#aa1111');
+    p(-4,-6,4,4,'#ffee00'); p(0,-6,4,4,'#ffee00');
+    p(-6,-2,12,2,'#ff6666');
+  } else {
+    p(-7,-10,14,18,'#7722bb'); p(-5,-12,10,4,'#9944dd');
+    p(-10,-6,4,8,'#5511aa'); p(6,-6,4,8,'#5511aa');
+    p(-2,-8,4,4,'#ffaaff'); p(-2,-2,4,4,'#cc88ff');
+  }
+}
+
+function drawCat(cx, cy) {
+  const p = (x,y,w,h,c) => { ctx.fillStyle=c; ctx.fillRect(cx+x,cy+y,w,h); };
+  p(-11,-6,22,12,'#c8b898');
+  p(-8,-10,5,6,'#c8b898'); p(3,-10,5,6,'#c8b898');
+  p(-7,-9,3,5,'#e8a8a0'); p(4,-9,3,5,'#e8a8a0');
+  p(-6,-4,4,3,'#a09070'); p(0,-4,4,3,'#a09070');
+  p(-3,-2,2,2,'#2a2a2a'); p(1,-2,2,2,'#2a2a2a');
+  p(-1,0,2,2,'#e8a0a0');
+  p(-14,-1,4,2,'#888'); p(10,-1,4,2,'#888');
+}
+
+function drawBoss(b) {
+  const cx = b.x, cy = b.y;
+  const p = (x,y,w,h,c) => { ctx.fillStyle=c; ctx.fillRect(cx+x,cy+y,w,h); };
+  const ang = b.openAngle;
+
+  // scissors open angle animation
+  const off = Math.sin(ang)*14;
+
+  // left blade
+  p(-26+off*0.3, -20-off*0.5, 24, 8, '#888');
+  p(-22+off*0.3, -28-off*0.5, 16, 10, '#aaa');
+  p(-18+off*0.3, -32-off*0.5, 10, 6, '#ccc');
+  p(-24+off*0.3, -14-off*0.5, 8, 6, '#999');
+  // right blade
+  p(2-off*0.3, -20-off*0.5, 24, 8, '#888');
+  p(6-off*0.3, -28-off*0.5, 16, 10, '#aaa');
+  p(8-off*0.3, -32-off*0.5, 10, 6, '#ccc');
+  p(16-off*0.3, -14-off*0.5, 8, 6, '#999');
+  // handle left
+  p(-20+off*0.5, 4+off*0.3, 16, 10, '#cc0000');
+  p(-18+off*0.5, 14+off*0.3, 12, 8, '#aa0000');
+  p(-16+off*0.5, 10+off*0.3, 6, 6, '#111');
+  // handle right
+  p(4-off*0.5, 4+off*0.3, 16, 10, '#cc0000');
+  p(6-off*0.5, 14+off*0.3, 12, 8, '#aa0000');
+  p(10-off*0.5, 10+off*0.3, 6, 6, '#111');
+  // center pivot
+  p(-6,-6,12,12,'#ddd'); p(-4,-4,8,8,'#fff'); p(-2,-2,4,4,'#888');
+
+  // HP bar
+  const bw = 80, bh = 6;
+  ctx.fillStyle = '#333';
+  ctx.fillRect(cx - bw/2, cy - 50, bw, bh);
+  ctx.fillStyle = b.hp / b.maxHp > 0.5 ? '#44cc44' : b.hp / b.maxHp > 0.25 ? '#ccaa00' : '#cc3333';
+  ctx.fillRect(cx - bw/2, cy - 50, bw * (b.hp/b.maxHp), bh);
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx - bw/2, cy - 50, bw, bh);
+}
+
+function drawBullet(bx, by) {
+  ctx.fillStyle = '#e8d44d';
+  ctx.fillRect(bx-2, by-8, 5, 14);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(bx-1, by-8, 2, 4);
+  ctx.fillStyle = '#ff8800';
+  ctx.fillRect(bx-2, by+6, 5, 4);
+}
+
+function drawEnemyBullet(bx, by) {
+  ctx.fillStyle = '#ff3333';
+  ctx.fillRect(bx-3, by-5, 6, 10);
+  ctx.fillStyle = '#ffaaaa';
+  ctx.fillRect(bx-1, by-5, 2, 3);
+}
+
+// ===== GAME LOOP =====
+
+function loop() {
+  if (state !== 'play') return;
+  frame++;
+  ctx.fillStyle = '#0d1b2a'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = '#081422'; ctx.fillRect(0,0,W,H*0.15);
+
+  // stars blue-tinted
+  for (let s of stars) {
+    s.y += s.sp; if (s.y > H) { s.y = 0; s.x = Math.random()*W; }
+    ctx.fillStyle = `rgba(180,210,255,${0.25+s.s*0.2})`;
+    ctx.fillRect(s.x, s.y, s.s, s.s);
+  }
+
+  // player move
+  if (keys['ArrowLeft']  || keys['KeyA']) player.x = Math.max(18, player.x - cfg.speed);
+  if (keys['ArrowRight'] || keys['KeyD']) player.x = Math.min(W-18, player.x + cfg.speed);
+
+  // shoot
+  if (player.shootCool > 0) player.shootCool--;
+  if (keys['Space'] && player.shootCool === 0) {
+    bullets.push({ x: player.x, y: player.y - 14 });
+    SFX.shoot();
+    player.shootCool = diff==='easy' ? 16 : diff==='hard' ? 9 : 12;
+  }
+  if (player.invincible > 0) player.invincible--;
+
+  // bullets move
+  const bSpd = 8;
+  for (let b of bullets) b.y -= bSpd;
+  bullets = bullets.filter(b => b.y > -20);
+
+  // enemy bullets
+  for (let eb of enemyBullets) eb.y += cfg.eBulletSpd;
+  enemyBullets = enemyBullets.filter(b => b.y < H+20);
+
+  // cats
+  for (let c of cats) c.y += c.dy;
+  cats = cats.filter(c => c.y < H+20);
+
+  // enemies
+  let wallHit = false;
+  for (let e of enemies) {
+    e.x += e.dx;
+    if (e.x < 16 || e.x > W-16) wallHit = true;
+    e.shootTimer--;
+    if (e.shootTimer <= 0) {
+      enemyBullets.push({ x: e.x, y: e.y+10 });
+      e.shootTimer = cfg.shootInt*0.6 + Math.random()*cfg.shootInt;
+    }
+  }
+  if (wallHit) enemies.forEach(e => { e.dx *= -1; e.y += 10; });
+
+  // boss
+  if (boss) {
+    boss.x += boss.dx;
+    if (boss.x < 40 || boss.x > W-40) boss.dx *= -1;
+    if (boss.opening) { boss.openAngle += 0.07; if (boss.openAngle > Math.PI*0.4) boss.opening = false; }
+    else { boss.openAngle -= 0.07; if (boss.openAngle < 0) boss.opening = true; }
+    boss.shootTimer--;
+    if (boss.shootTimer <= 0) {
+      const angles = boss.hp/boss.maxHp > 0.5 ? [-0.3,0,0.3] : [-0.5,-0.2,0,0.2,0.5];
+      for (let a of angles) enemyBullets.push({ x: boss.x + Math.sin(a)*20, y: boss.y+30, vx: Math.sin(a)*cfg.eBulletSpd, vy: cfg.eBulletSpd });
+      boss.shootTimer = diff==='easy' ? 55 : diff==='hard' ? 28 : 40;
+    }
+    // boss bullet move override
+    for (let eb of enemyBullets) { if (eb.vx) { eb.x += eb.vx; eb.y += eb.vy; } }
+    // hit boss
+    for (let b of bullets) {
+      if (Math.abs(b.x - boss.x) < 28 && Math.abs(b.y - boss.y) < 26) {
+        boss.hp--; b.y = -999;
+        SFX.bossHit();
+        spawnParticle(b.x, b.y, '#ffcc00', 3);
+        if (boss.hp <= 0) {
+          SFX.bossDie();
+          spawnParticle(boss.x, boss.y, '#ff5050', 20);
+          spawnParticle(boss.x, boss.y, '#e8d44d', 15);
+          score += 500 * level;
+          boss = null; level++; spawnWave();
+        }
+      }
+    }
+  }
+
+  // bullet vs enemy
+  for (let b of bullets) {
+    for (let e of enemies) {
+      if (e.x < -100) continue;
+      if (Math.abs(b.x - e.x) < 13 && Math.abs(b.y - e.y) < 12) {
+        e.hp--; b.y = -999;
+        if (e.hp <= 0) {
+          SFX.enemyDie();
+          spawnParticle(e.x, e.y, '#ff5050');
+          maybeDrop(e.x, e.y);
+          e.x = -9999;
+          score += 10 * level;
+        }
+      }
+    }
+  }
+  enemies = enemies.filter(e => e.x > -100);
+
+  // player hit
+  if (player.invincible === 0) {
+    for (let eb of enemyBullets) {
+      if (Math.abs(eb.x - player.x) < 11 && Math.abs(eb.y - player.y) < 13) {
+        lives--; player.invincible = 80;
+        SFX.playerHit();
+        spawnParticle(player.x, player.y, '#e8d44d', 10);
+        eb.y = H+100;
+        if (lives <= 0) {
+          stopBGM();
+          setTimeout(()=>SFX.gameover(), 100);
+          state = 'gameover'; drawGameOver(); return;
+        }
+      }
+    }
+    for (let e of enemies) {
+      if (e.y > H - 70) {
+        stopBGM();
+        setTimeout(()=>SFX.gameover(), 100);
+        state = 'gameover'; drawGameOver(); return;
+      }
+    }
+  }
+
+  // cat pickup
+  for (let c of cats) {
+    if (Math.abs(c.x - player.x) < 16 && Math.abs(c.y - player.y) < 14) {
+      lives = Math.min(lives+1, diff==='easy'?7:diff==='hard'?4:5);
+      SFX.catGet();
+      spawnParticle(c.x, c.y, '#ffddaa', 8);
+      c.y = H+100;
+    }
+  }
+
+  // wave clear
+  if (enemies.length === 0 && !boss) {
+    level++;
+    SFX.levelUp();
+    spawnParticle(W/2, H/2, '#e8d44d', 20);
+    spawnWave();
+    if (level % 3 === 0) setTimeout(()=>SFX.bossAppear(), 300);
+  }
+
+  // draw
+  for (let e of enemies) drawEnemy(e.x, e.y, e.type);
+  if (boss) drawBoss(boss);
+  for (let c of cats) drawCat(c.x, c.y);
+  for (let b of bullets) drawBullet(b.x, b.y);
+  for (let eb of enemyBullets) drawEnemyBullet(eb.x, eb.y);
+
+  for (let p of particles) {
+    p.x += p.vx; p.y += p.vy; p.life--;
+    ctx.globalAlpha = p.life / 50;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x-2, p.y-2, 4, 4);
+    ctx.globalAlpha = 1;
+  }
+  particles = particles.filter(p => p.life > 0);
+
+  drawBamiri(player.x, player.y, player.invincible > 0);
+
+  // touch guide (薄く常時表示)
+  ctx.globalAlpha = 0.08;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W/2, H);
+  ctx.globalAlpha = 0.08;
+  ctx.fillRect(W/2, 0, W/2, H);
+  ctx.globalAlpha = 1;
+  // 中心線
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4,4]);
+  ctx.beginPath(); ctx.moveTo(W/2, 0); ctx.lineTo(W/2, H); ctx.stroke();
+  ctx.setLineDash([]);
+  // ラベル
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.font = '10px Courier New';
+  ctx.textAlign = 'left';  ctx.fillText('◀ 左', 8, H-10);
+  ctx.textAlign = 'right'; ctx.fillText('右 ▶', W-8, H-10);
+  ctx.textAlign = 'center'; ctx.fillText('両手で射撃', W/2, H-10);
+
+  // boss warning (点滅なし、固定色)
+  if (boss) {
+    ctx.fillStyle = '#ff6600';
+    ctx.font = 'bold 11px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('⚠ BOSS ⚠', W/2, 36);
+  }
+
+  // HUD update
+  const maxL = diff==='easy' ? 7 : diff==='hard' ? 4 : 5;
+  document.getElementById('scoreDisp').textContent = 'SCORE:' + score;
+  document.getElementById('livesDisp').textContent = '♥'.repeat(Math.max(0,lives)) + '♡'.repeat(Math.max(0,Math.min(maxL,cfg.lives)-lives));
+  document.getElementById('levelDisp').textContent = 'LV:' + level;
+
+  requestAnimationFrame(loop);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillRect(0,0,W,H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e8d44d';
+  ctx.font = 'bold 28px Courier New';
+  ctx.fillText('GAME OVER', W/2, H/2 - 40);
+  ctx.font = '14px Courier New';
+  ctx.fillText('SCORE: ' + score, W/2, H/2 - 10);
+  ctx.fillStyle = '#888';
+  ctx.font = '11px Courier New';
+  ctx.fillText('[ もう一度遊ぶ ]', W/2, H/2 + 20);
+
+  const ov = document.getElementById('overlay');
+  ov.innerHTML = `
+    <div class="ov-title">GAME OVER</div>
+    <div class="ov-score">SCORE: ${score}</div>
+    <div class="ov-msg">LV${level} まで到達！</div>
+    <button class="start-btn" id="retryBtn">▶ もう一度</button>
+    <div class="hint" style="margin-top:12px;">難易度: ${cfg.label}</div>
+  `;
+  ov.style.display = 'flex';
+  document.getElementById('retryBtn').addEventListener('click', () => {
+    initGame();
+    ov.style.display = 'none';
+    state = 'play';
+    startBGM();
+    requestAnimationFrame(loop);
+  });
+}
+</script>
+</body>
+</html>
